@@ -1,3 +1,13 @@
+#!/usr/bin/env python
+# coding: utf
+# file: squbo_qaoa.py
+# author: Anthony Wilkie
+
+# TODO: input QUBOs as matrices for efficient generality
+# TODO: convert QUBO matrix into Hamiltonian with offset
+# TODO: calculate expected value with offset
+# TODO: find more efficient way to implement scenarios (amplitudes of states for O(log(n))
+
 # %% Imports
 import pennylane as qml
 from pennylane import numpy as np
@@ -168,15 +178,26 @@ def sqaoa(n_layers=1):
     return params, bit_strings
 
 
+# %% Parse scenraio bitstring
+def parse_scenraio(bitstrings):
+    parsed = [[] for _ in range(n_scenarios)]
+    for i in bitstrings:
+        var_bits = bitstring_to_int(f'{i:0{n_wires+n_scenarios}b}'[:n_wires])
+        scen_bits = f'{i:0{n_wires+n_scenarios}b}'[n_wires:]
+        idx = scen_bits.index('1')
+        parsed[idx].append(var_bits)
+    return parsed
+
 # %% Plot
 import matplotlib.pyplot as plt
+barcolors = ['#286d8c', '#a99b63', '#936846', '#4d7888']
 
-def graph(bitstrings1, beamer):
+def graph(bitstrings, beamer):
 
     if beamer:
-        xticks = range(0, 2**(n_wires+n_scenarios))
-        xtick_labels = list(map(lambda x: format(x, f"0{n_wires+n_scenarios}b"), xticks))
-        bins = np.arange(0, 2**(n_wires+n_scenarios)+1) - 0.5
+        xticks = range(0, 2**(n_wires))
+        xtick_labels = list(map(lambda x: format(x, f"0{n_wires}b"), xticks))
+        bins = np.arange(0, 2**(n_wires)+1) - 0.5
 
         plt.figure(figsize=(16, 8))
         plt.rc('font', size=16)
@@ -190,20 +211,20 @@ def graph(bitstrings1, beamer):
         plt.xlabel("Bitstrings")
         plt.ylabel("Frequency")
         plt.xticks(xticks, xtick_labels, rotation="vertical")
-        plt.hist([bitstrings1],
+        plt.hist(bitstrings,
                  bins=bins,
                  density=True,
-                 color=['#286d8c'],
+                 color=barcolors[:n_scenarios],
                  edgecolor = "#041017",
-                 label=['s-QAOA'])
+                 label=[f'scenario {i}' for i in range(n_scenarios)])
         plt.legend()
         plt.tight_layout()
         # plt.savefig('/home/vilcius/School/utk/PHYS_642-quantum_information/project/maxcut_1_beamer.pdf',
                    # transparent=True)
     else:
-        xticks = range(0, 2**(n_wires+n_scenarios))
-        xtick_labels = list(map(lambda x: format(x, f"0{n_wires+n_scenarios}b"), xticks))
-
+        xticks = range(0, 2**(n_wires))
+        xtick_labels = list(map(lambda x: format(x, f"0{n_wires}b"), xticks))
+        bins = np.arange(0, 2**(n_wires)+1) - 0.5
 
         plt.figure(figsize=(16, 8))
         plt.rc('font', size=16)
@@ -211,12 +232,12 @@ def graph(bitstrings1, beamer):
         plt.xlabel("Bitstrings")
         plt.ylabel("Frequency")
         plt.xticks(xticks, xtick_labels, rotation="vertical")
-        plt.hist([bitstrings1],
+        plt.hist(bitstrings,
                  bins=bins,
                  density=True,
-                 color=['#286d8c'],
+                 color=barcolors[:n_scenarios],
                  edgecolor = "#041017",
-                 label=['s-QAOA'])
+                 label=[f'scenario {i}' for i in range(n_scenarios)])
 
         plt.legend()
         plt.tight_layout()
@@ -228,9 +249,12 @@ def graph(bitstrings1, beamer):
 
 # %% Run the Thing
 params, bitstrings = sqaoa(n_layers=1)
+bitstrings = parse_scenraio(bitstrings)
 graph(bitstrings, beamer=True)
 print_obj_vals(n_scenarios)
 
 
 # %% graphs
-graph(bitstrings, beamer=True)
+# params, bitstrings = sqaoa(n_layers=1)
+# bitstrings = parse_scenraio(bitstrings)
+# graph(bitstrings, beamer=True)
