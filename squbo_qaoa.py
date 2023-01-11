@@ -3,9 +3,6 @@
 # file: squbo_qaoa.py
 # author: Anthony Wilkie
 
-# TODO: input QUBOs as matrices for efficient generality
-# TODO: convert QUBO matrix into Hamiltonian with offset
-# TODO: calculate expected value with offset
 # TODO: find more efficient way to implement scenarios (amplitudes of states for O(log(n))
 
 # %% Imports
@@ -13,56 +10,113 @@ import pennylane as qml
 from pennylane import numpy as np
 from matplotlib import pyplot as plt
 
-np.random.seed(42)
 
+# %% Create QUBO Problem Matrix
+linear = np.array(
+        [[1.0, -3.0],
+         [1.0, 5.0],
+         [1.0, 0.0]])
+quadratic = np.array(
+        [[0.0, 2.0],
+         [0.0, 0.0]])
 
-# %% Variables
-n_wires=2
-n_scenarios=3
-
-var = [f'x{i}' for i in range(n_wires)]
-scen = [f's{i}' for i in range(n_scenarios)]
-
-# used to remap the wires in the Hamiltonians defined above
-wiremap = {}
-for i in range(n_wires):
-    wiremap[i] = var[i]
-
-sdev = qml.device("default.qubit", wires=var+scen, shots=1)
-print(sdev.wires)
-
-
-# %% create Hamiltonians
-x = [1/2 * (qml.Identity(i) - qml.PauliZ(i)) for i in range(2)]
-c = [-3, 1, 0]
-
-# create the objective function/cost Hamiltonian based off of the c value
-def obj(x0, x1, c):
-    if type(x0) == qml.Hamiltonian:
-        return 2*x0@x1 + x0 + c*x1
-    else:
-        return 2*x0*x1 + x0 + c*x1
-
-C = [obj(x[0], x[1], s) for s in c]
+print(np.shape(linear))
+Q = []
+for i in range(len(linear)):
+    q = np.copy(quadratic)
+    for ii in range(len(linear[i])):
+        q[ii][ii] = q[ii][ii] + linear[i][ii]
+    Q.append(q)
 
 for i in range(3):
-    print(f'H_{i} =\n{C[i]}\n')
+    print('The QUBO matrices in each scenario')
+    print(f'Q_{i} =\n{Q[i]}\n')
 
 # combined
-print(f'H_c =\n{sum(C)}\n')
+print('The combined QUBO matrix')
+print(f'Q_c =\n{sum(Q)}\n')
 
-def print_obj_vals(ss):
-    for i in range(2):
-        for ii in range(2):
-            print(f'x = ({i},{ii}),', end=' ')
+def print_obj_vals(n_wires, n_scenarios):
+    for i in range(n_wires):
+        for ii in range(n_wires):
+            x = np.array([i,ii])
+            print(f'x = {x},', end=' ')
             obj_c = 0
-            for s in range(ss):
-                obj_s = obj(i, ii, c[s])
-                obj_c += obj_s
+            for s in range(n_scenarios):
+                obj_s = np.dot(x,np.dot(quadratic,x)) + np.dot(x,linear[s])
+                obj_c = obj_c + obj_s
                 print(f'obj_{s} = {obj_s},', end=' ')
             print(f'obj_c = {obj_c}')
 
-print_obj_vals(3)
+print_obj_vals(np.shape(linear)[1], np.shape(linear)[0])
+
+
+# %% Create Hamiltonian from Matrix
+def get_hvals(linear, quadratic): 
+    # Gets the Ising coefficients, NOT the 2^n by 2^n Ising Hamiltonian.
+    # Reparameterizes the QUBO problem into {+1, -1}
+    # Reparameterization done using x=(Z+1)/2
+    # Minimize z.J.z + z.h + offset
+    nvars = len(linear)
+    jmat = np.zeros(shape=(nvars,nvars))
+    hvec = np.zeros(nvars)
+    
+    for i in range(nvars):
+        # the coefficients for the linear terms
+        hvec[i] = hvec[i] + (1/2 * linear[i]
+                             + 1/4 * sum([quadratic[k][i] for k in range(i)])
+                             + 1/4 * sum([quadratic[i][l] for l in range(i+1,nvars)]))
+
+        for j in range(i+1, nvars):
+            # the coefficients for the quadratic terms 
+            jmat[i][j] = jmat[i][j] + quadratic[i][j]/4
+    
+    # Gives the correct offset value to the CF
+    offset = (np.sum(quadratic)/4 + np.sum(linear)/2)
+    return jmat, hvec, offset
+
+def get_qml_ising(linear, quadratic):
+    # Function to obtain qml.Hamiltonian from Ising coefficients
+    nq = len(linear)
+    jj, hh, oo = get_hvals(linear, quadratic)
+    h_coeff = []
+    h_obs = []
+
+    for i in range(nq):
+        h_coeff.append(hh[i])
+        h_obs.append(qml.PauliZ(i))
+        for j in range(i+1,nq):
+            h_coeff.append(jj[i,j])
+            h_obs.append(qml.PauliZ(i) @ qml.PauliZ(j))
+
+    h_coeff.append(oo)
+    h_coeff = np.array(h_coeff)
+    h_obs.append(qml.Identity(0))
+    hamiltonian = qml.Hamiltonian(h_coeff, h_obs)
+    return hamiltonian
+
+C = [get_qml_ising(linear[i], quadratic) for i in range(3)]
+for i in range(3):
+    print('The Hamiltonians in each scenario')
+    print(f'H_{i} =\n{C[i]}\n')
+
+# combined
+print('The combined Hamiltonian')
+print(f'H_c =\n{sum(C)}\n')
+
+
+# %% test
+for i in range(3):
+    print(f'Q_{i} =\n{Q[i]}')
+
+# combined
+    print(f'H_{i} =\n{C[i]}\n')
+
+# combined
+print('The combined QUBO matrix')
+print(f'Q_c =\n{sum(Q)}')
+print('The combined Hamiltonian')
+print(f'H_c =\n{sum(C)}')
 
 
 # %% bitstring
@@ -79,6 +133,21 @@ def to_ctrl_val(i, n):
 
 for i in range(3):
     print(to_ctrl_val(2**i, 3))
+
+
+# %% Variables
+n_scenarios, n_wires = np.shape(linear)
+
+var = [f'x{i}' for i in range(n_wires)]
+scen = [f's{i}' for i in range(n_scenarios)]
+
+# used to remap the wires in the Hamiltonians defined above
+wiremap = {}
+for i in range(n_wires):
+    wiremap[i] = var[i]
+
+sdev = qml.device("default.qubit", wires=var+scen, shots=1)
+print(sdev.wires)
 
 
 # %% Gates
@@ -139,6 +208,8 @@ def circuit(gammas, betas, sample=False, n_layers=1):
 
 
 # %% Optimization
+# np.random.seed(1248)
+
 def sqaoa(n_layers=1):
     print("\np={:d}".format(n_layers))
 
@@ -149,7 +220,7 @@ def sqaoa(n_layers=1):
     def objective(params):
         gammas = params[0]
         betas = params[1]
-        neg_obj = -circuit(gammas, betas,n_layers=n_layers)
+        neg_obj = circuit(gammas, betas,n_layers=n_layers)
         return neg_obj
 
     # initialize optimizer: Adagrad works well empirically
@@ -187,6 +258,7 @@ def parse_scenraio(bitstrings):
         idx = scen_bits.index('1')
         parsed[idx].append(var_bits)
     return parsed
+
 
 # %% Plot
 import matplotlib.pyplot as plt
@@ -251,7 +323,7 @@ def graph(bitstrings, beamer):
 params, bitstrings = sqaoa(n_layers=1)
 bitstrings = parse_scenraio(bitstrings)
 graph(bitstrings, beamer=True)
-print_obj_vals(n_scenarios)
+print_obj_vals(n_wires, n_scenarios)
 
 
 # %% graphs
