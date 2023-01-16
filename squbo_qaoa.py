@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-# coding: utf
+# coding: utf-8
 # file: squbo_qaoa.py
 # author: Anthony Wilkie
 
-# TODO: find more efficient way to implement scenarios (amplitudes of states for O(log(n))
+# TODO: figure out why QAOA no longer give correct solutions
 
 # %% Imports
 import pennylane as qml
@@ -105,20 +105,6 @@ print('The combined Hamiltonian')
 print(f'H_c =\n{sum(C)}\n')
 
 
-# %% test
-for i in range(3):
-    print(f'Q_{i} =\n{Q[i]}')
-
-# combined
-    print(f'H_{i} =\n{C[i]}\n')
-
-# combined
-print('The combined QUBO matrix')
-print(f'Q_c =\n{sum(Q)}')
-print('The combined Hamiltonian')
-print(f'H_c =\n{sum(C)}')
-
-
 # %% bitstring
 def bitstring_to_int(bit_string_sample):
     bit_string = "".join(str(bs) for bs in bit_string_sample)
@@ -133,21 +119,52 @@ def to_ctrl_val(i, n):
 
 for i in range(3):
     print(to_ctrl_val(2**i, 3))
+    print(to_ctrl_val(i,int(np.ceil(np.log2(3)))))
 
 
-# %% Variables
+# %% Wires
 n_scenarios, n_wires = np.shape(linear)
 
-var = [f'x{i}' for i in range(n_wires)]
-scen = [f's{i}' for i in range(n_scenarios)]
+def create_wires(encoding='basis'):
+    r"""
+    Create the variable and scenario wires based on the type of encoding used
 
-# used to remap the wires in the Hamiltonians defined above
-wiremap = {}
-for i in range(n_wires):
-    wiremap[i] = var[i]
+    Args:
+        encoding (data type): TODO
+
+    Returns:
+        var (list): the variable wires
+        scen (list): the scenario wires
+    """
+    var = [f'x{i}' for i in range(n_wires)]
+
+    if encoding == 'basis':
+        scen = [f's{i}' for i in range(n_scenarios)]
+    elif encoding == 'amplitude':
+        scen = [f's{i}' for i in range(int(np.ceil(np.log2(n_scenarios))))]
+
+    return var, scen
+
+var, scen = create_wires('amplitude')
 
 sdev = qml.device("default.qubit", wires=var+scen, shots=1)
 print(sdev.wires)
+print(dict(enumerate(var)))
+
+
+# %% Initalize Scenario Qubits
+def basis_encoding(probs):
+    r"""
+    Initializes the scenario qubits using Basis Encoding, in the form of the W state.
+
+    Args:
+        probabilities (np.array): The probability of being in each scenario
+    """
+
+    w_state = np.zeros(2**n_scenarios)
+    for i in range(n_scenarios):
+        w_state[2**i] = w_state[2**i] +  probs[i]
+    qml.MottonenStatePreparation(w_state,wires=scen)
 
 
 # %% Gates
@@ -157,37 +174,47 @@ def U_B(beta):
         qml.RX(2 * beta, wires=wire)
 
 # unitary operator U_C with parameter gamma
-def U_C(C,gamma,scen):
+def U_C(C, gamma, scen, encoding='basis'):
     for s in range(n_scenarios):
-        Cs = C[s].map_wires(wiremap)
+        Cs = C[s].map_wires(dict(enumerate(var)))
         UCs = qml.CommutingEvolution(Cs,gamma)
-        qml.ctrl(UCs,
-                 control=scen,
-                 control_values=to_ctrl_val(2**s,n_scenarios))
+
+        if encoding == 'basis':
+            qml.ctrl(UCs,
+                     control=scen,
+                     control_values=to_ctrl_val(2**s,n_scenarios)
+                     )
+        elif encoding == 'amplitude':
+            qml.ctrl(UCs,
+                     control=scen,
+                     control_values=to_ctrl_val(s,int(np.ceil(np.log2(n_scenarios))))
+                     )
 
 
 # %% Circuit
 @qml.qnode(sdev)
-def circuit(gammas, betas, sample=False, n_layers=1):
+def circuit(gammas, betas, encoding='basis', sample=False, n_layers=1):
     # apply Hadamards to get the n qubit |+> state
     for x in var:
         qml.Hadamard(wires=x)
         
-    # initialize scenario qubit
-    #qml.Hadamard(wires='s0')
-    
-    # will be useful when having multiple scenarios
-    w_state = np.zeros(2**n_scenarios)
-    probs = [1/n_scenarios,1/n_scenarios,1/n_scenarios]
-    for i in range(n_scenarios):
-        w_state[2**i] = np.sqrt(probs[i])
-    qml.MottonenStatePreparation(w_state,wires=scen)
+    # initialize the scenario qubits
+    probs = np.array([1/n_scenarios,1/n_scenarios,1/n_scenarios])
+    normalized = probs / np.linalg.norm(probs)
+
+    if encoding == 'basis':
+        # use Basis Encoding
+        basis_encoding(normalized)
+    elif encoding == 'amplitude':
+        # use Amplitude Embedding
+        qml.AmplitudeEmbedding(normalized, scen, pad_with=0.0)
+
     
     # p instances of unitary operators
     for i in range(n_layers):
-        U_C(C,gammas[i],scen)
+        U_C(C,gammas[i],scen, encoding)
         U_B(betas[i])
-    
+
     # return samples instead of expectation value
     if sample:
         # measurement phase
@@ -204,13 +231,13 @@ def circuit(gammas, betas, sample=False, n_layers=1):
     
     # Currently use the sum of the Cost Hamiltonians.
     H = sum(C)
-    return qml.expval(H.map_wires(wiremap))
+    return qml.expval(H.map_wires(dict(enumerate(var))))
 
 
 # %% Optimization
 # np.random.seed(1248)
 
-def sqaoa(n_layers=1):
+def sqaoa(n_layers=1, encoding='basis' ):
     print("\np={:d}".format(n_layers))
 
     # initialize the parameters near zero
@@ -220,7 +247,7 @@ def sqaoa(n_layers=1):
     def objective(params):
         gammas = params[0]
         betas = params[1]
-        neg_obj = circuit(gammas, betas,n_layers=n_layers)
+        neg_obj = circuit(gammas, betas, encoding=encoding, n_layers=n_layers)
         return neg_obj
 
     # initialize optimizer: Adagrad works well empirically
@@ -238,7 +265,7 @@ def sqaoa(n_layers=1):
     bit_strings = []
     n_samples = 1000
     for i in range(0, n_samples):
-        bit_strings.append(bitstring_to_int(circuit(params[0], params[1], sample=True, n_layers=n_layers)))
+        bit_strings.append(bitstring_to_int(circuit(params[0], params[1], encoding=encoding, sample=True, n_layers=n_layers)))
 
     # print optimal parameters and most frequently sampled bitstring
     counts = np.bincount(np.array(bit_strings))
@@ -250,12 +277,15 @@ def sqaoa(n_layers=1):
 
 
 # %% Parse scenraio bitstring
-def parse_scenraio(bitstrings):
+def parse_scenraio(bitstrings, encoding='basis'):
     parsed = [[] for _ in range(n_scenarios)]
     for i in bitstrings:
-        var_bits = bitstring_to_int(f'{i:0{n_wires+n_scenarios}b}'[:n_wires])
-        scen_bits = f'{i:0{n_wires+n_scenarios}b}'[n_wires:]
-        idx = scen_bits.index('1')
+        var_bits = bitstring_to_int(f'{i:0{n_wires+len(scen)}b}'[:n_wires])
+        scen_bits = f'{i:0{n_wires+len(scen)}b}'[n_wires:]
+        if encoding == 'basis':
+            idx = scen_bits.index('1')
+        elif encoding == 'amplitude':
+            idx = bitstring_to_int(scen_bits)
         parsed[idx].append(var_bits)
     return parsed
 
@@ -320,9 +350,16 @@ def graph(bitstrings, beamer):
 
 
 # %% Run the Thing
-params, bitstrings = sqaoa(n_layers=1)
-bitstrings = parse_scenraio(bitstrings)
-graph(bitstrings, beamer=True)
+n_scenarios, n_wires = np.shape(linear)
+encoding = 'basis'
+# encoding = 'amplitude'
+
+var, scen = create_wires(encoding)
+sdev = qml.device("default.qubit", wires=var+scen, shots=1)
+
+params, bitstrings = sqaoa(n_layers=1, encoding=encoding)
+parsed = parse_scenraio(bitstrings, encoding=encoding)
+graph(parsed, beamer=True)
 print_obj_vals(n_wires, n_scenarios)
 
 
@@ -330,3 +367,4 @@ print_obj_vals(n_wires, n_scenarios)
 # params, bitstrings = sqaoa(n_layers=1)
 # bitstrings = parse_scenraio(bitstrings)
 # graph(bitstrings, beamer=True)
+
