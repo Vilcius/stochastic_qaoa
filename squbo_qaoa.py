@@ -149,8 +149,8 @@ def create_wires(encoding='basis'):
 
     return var, scen
 
-encoding = 'basis'
-# encoding = 'amplitude'
+# encoding = 'basis'
+encoding = 'amplitude'
 
 var, scen = create_wires(encoding)
 sdev = qml.device("default.qubit", wires=var+scen, shots=1)
@@ -301,7 +301,7 @@ def parse_scenraio(bitstrings, encoding='basis'):
 import matplotlib.pyplot as plt
 barcolors = ['#286d8c', '#a99b63', '#936846', '#4d7888']
 
-def graph(bitstrings, beamer):
+def graph(bitstrings, beamer, p, encoding):
 
     if beamer:
         xticks = range(0, 2**(n_wires))
@@ -316,8 +316,8 @@ def graph(bitstrings, beamer):
         plt.rc('xtick',color='#98c9d3')
         plt.rc('ytick',color='#98c9d3')
         plt.rc('legend',labelcolor='#98c9d3', edgecolor='#98c9d3',facecolor=(0,0,0,0))
-        plt.title("s-QAOA")
-        plt.xlabel("Bitstrings")
+        plt.title(f"Stochastic QUBO with {encoding} encoding using {p}-QAOA")
+        plt.xlabel("Solutions")
         plt.ylabel("Frequency")
         plt.xticks(xticks, xtick_labels, rotation="vertical")
         plt.hist(bitstrings,
@@ -328,17 +328,18 @@ def graph(bitstrings, beamer):
                  label=[f'scenario {i}' for i in range(n_scenarios)])
         plt.legend()
         plt.tight_layout()
-        # plt.savefig('/home/vilcius/School/utk/PHYS_642-quantum_information/project/maxcut_1_beamer.pdf',
-                   # transparent=True)
+        plt.savefig(f'stochastic_qubo_{encoding}_p={p}_beamer.pdf',
+                   transparent=True)
     else:
         xticks = range(0, 2**(n_wires))
         xtick_labels = list(map(lambda x: format(x, f"0{n_wires}b"), xticks))
         bins = np.arange(0, 2**(n_wires)+1) - 0.5
 
+        plt.rcdefaults()
         plt.figure(figsize=(16, 8))
         plt.rc('font', size=16)
-        plt.title("s-QAOA")
-        plt.xlabel("Bitstrings")
+        plt.title(f"Stochastic QUBO with {encoding} encoding using {p}-QAOA")
+        plt.xlabel("Solutions")
         plt.ylabel("Frequency")
         plt.xticks(xticks, xtick_labels, rotation="vertical")
         plt.hist(bitstrings,
@@ -350,23 +351,24 @@ def graph(bitstrings, beamer):
 
         plt.legend()
         plt.tight_layout()
-        # plt.savefig('/home/vilcius/School/utk/PHYS_642-quantum_information/project/maxcut_1.pdf',
-        #            transparent=True)
+        plt.savefig(f'stochastic_qubo_{encoding}_p={p}.pdf',
+                   transparent=True)
 
     plt.show()
 
 
 # %% Run the Thing
-params, bitstrings = sqaoa(n_layers=1, encoding=encoding)
+p = 1
+params, bitstrings = sqaoa(n_layers=p, encoding=encoding)
 parsed = parse_scenraio(bitstrings, encoding=encoding)
-graph(parsed, beamer=True)
+graph(parsed, p=p, encoding=encoding, beamer=True)
 print_obj_vals(n_wires, n_scenarios)
 
 
 # %% graphs
 # params, bitstrings = sqaoa(n_layers=1)
 # bitstrings = parse_scenraio(bitstrings)
-graph(parsed, beamer=True)
+graph(parsed, p=p, encoding=encoding, beamer=False)
 
 # %% test
 for i in bitstrings:
@@ -378,5 +380,4 @@ print(parsed)
 
 # %% testt
 print(sum(C))
-print(n_scenarios)
 print(qml.draw_mpl(circuit, style='solarized_dark')(params[0],params[1],encoding))
