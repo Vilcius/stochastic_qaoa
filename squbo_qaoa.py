@@ -16,9 +16,9 @@ from matplotlib import pyplot as plt
 # %% Create QUBO Problem Matrix
 linear = np.array(
         [[1.0, -3.0],
-         [1.0, 0.0],
-         [1.0, 5.0],
-         [2.0, 5.0]#,
+         [1.0, 0.0]#,
+         # [1.0, 5.0],
+         # [2.0, 5.0]#,
          ])
 quadratic = np.array(
         [[0.0, 2.0],
@@ -32,7 +32,7 @@ for i in range(len(linear)):
         q[ii][ii] = q[ii][ii] + linear[i][ii]
     Q.append(q)
 
-for i in range(3):
+for i in range(len(linear)):
     print('The QUBO matrices in each scenario')
     print(f'Q_{i} =\n{Q[i]}\n')
 
@@ -149,11 +149,12 @@ def create_wires(encoding='basis'):
 
     return var, scen
 
-# encoding = 'basis'
-encoding = 'amplitude'
+encoding = 'basis'
+# encoding = 'amplitude'
 
+shots = 1000
 var, scen = create_wires(encoding)
-sdev = qml.device("default.qubit", wires=var+scen, shots=1)
+sdev = qml.device("default.qubit", wires=var+scen, shots=shots)
 
 print(sdev.wires)
 print(dict(enumerate(var)))
@@ -200,7 +201,7 @@ def U_C(C, gamma, scen, encoding='basis'):
 
 # %% Circuit
 @qml.qnode(sdev)
-def circuit(gammas, betas, encoding='basis', sample=False, n_layers=1):
+def circuit(gammas, betas, encoding='basis', stage=1, xi = None, counts=False, n_layers=1):
     # apply Hadamards to get the n qubit |+> state
     for x in var:
         qml.Hadamard(wires=x)
@@ -223,22 +224,16 @@ def circuit(gammas, betas, encoding='basis', sample=False, n_layers=1):
         U_B(betas[i])
 
     # return samples instead of expectation value
-    if sample:
+    if counts:
         # measurement phase
-        return qml.sample()
-    
-    # during the optimization phase we are evaluating the objective using expval
-    # use Hamiltonian corresponding to scenario
-    # DOES NOT WORK FOR MORE THAN 2 SCENARIOS
-    #s = qml.measure(scen)
-    #if s == 0:
-    #    H = H_0
-    #else:
-    #    H = H_1
-    
-    # Currently use the sum of the Cost Hamiltonians.
-    H = sum(C)
-    return qml.expval(H.map_wires(dict(enumerate(var))))
+        return qml.counts(all_outcomes=True)
+
+    if stage == 1:
+        # Currently use the sum of the Cost Hamiltonians.
+        H = sum(C)
+        return qml.expval(H.map_wires(dict(enumerate(var))))
+    elif stage == 2:
+        return [qml.expval(qml.PauliZ(wires=xi) @ (qml.PauliZ(wires=f's{u}') - qml.PauliZ(wires=f's{v}'))) for u in range(n_scenarios-1) for v in range(u+1, n_scenarios)]
 
 
 # %% Optimization
@@ -249,12 +244,22 @@ def sqaoa(n_layers=1, encoding='basis' ):
 
     # initialize the parameters near zero
     init_params = 0.01 * np.random.rand(2, n_layers, requires_grad=True)
+    lambs = [1 for i in range(n_wires)]
 
     # minimize the negative of the objective function
     def objective(params):
         gammas = params[0]
         betas = params[1]
-        neg_obj = circuit(gammas, betas, encoding=encoding, n_layers=n_layers)
+
+        # Stage 1
+        c_expval = circuit(gammas, betas, encoding=encoding, n_layers=n_layers)
+
+        # Stage 2
+        xs_expval = []
+        for xi in var:
+            xs_expval.append(circuit(gammas, betas, encoding=encoding, stage=2, xi=xi, n_layers=n_layers))
+
+        neg_obj = c_expval + sum([lambs[i] * xs_expval[i]**2 for i in range(n_wires)])
         return neg_obj
 
     # initialize optimizer: Adagrad works well empirically
@@ -264,36 +269,39 @@ def sqaoa(n_layers=1, encoding='basis' ):
     params = init_params
     steps = 50
     for i in range(steps):
+        # TODO: implement step_and_cost, if needed
         params = opt.step(objective, params)
         if (i + 1) % 5 == 0:
             print("Objective after step {:5d}: {: .7f}".format(i + 1, -objective(params)))
 
-    # sample measured bitstrings 100 times
-    bit_strings = []
-    n_samples = 1000
-    for i in range(0, n_samples):
-        bit_strings.append(bitstring_to_int(circuit(params[0], params[1], encoding=encoding, sample=True, n_layers=n_layers)))
+    # count measured bitstrings 1000 times
+    n_counts=shots
+    counts = circuit(params[0], params[1], encoding=encoding, counts=True, n_layers=n_layers)
 
-    # print optimal parameters and most frequently sampled bitstring
-    counts = np.bincount(np.array(bit_strings))
-    most_freq_bit_string = np.argmax(counts)
+    # print optimal parameters and most frequently countd bitstring
+    most_freq_bit_string = max(counts, key=counts.get)
     print("Optimized (gamma, beta) vectors:\n{}".format(params[:, :n_layers]))
-    print(f"Most frequently sampled bit string is: {most_freq_bit_string:0{len(var)+len(scen)}b} with probability {counts[most_freq_bit_string]/n_samples:.4f}")
+    print(f"Most frequently countd bit string is: {most_freq_bit_string} with probability {counts[most_freq_bit_string]/n_counts:.4f}")
 
-    return params, bit_strings
+    return params, counts
 
 
 # %% Parse scenraio bitstring
 def parse_scenraio(bitstrings, encoding='basis'):
-    parsed = [[] for _ in range(n_scenarios)]
-    for i in bitstrings:
-        var_bits = bitstring_to_int(f'{i:0{n_wires+len(scen)}b}'[:n_wires])
-        scen_bits = f'{i:0{n_wires+len(scen)}b}'[n_wires:]
+    parsed = [{} for _ in range(n_scenarios)]
+    for i in bitstrings.keys():
+        var_bits = i[:n_wires]
+        scen_bits = i[n_wires:]
+        print(i, var_bits, scen_bits)
         if encoding == 'basis':
-            idx = scen_bits.index('1')
+            if scen_bits.count('1') == 1:
+                print(scen_bits)
+                idx = scen_bits.index('1')
+                print(idx)
+                parsed[idx][var_bits] = bitstrings[i]/shots
         elif encoding == 'amplitude':
             idx = bitstring_to_int(scen_bits)
-        parsed[idx].append(var_bits)
+            parsed[idx][var_bits] = bitstrings[i]/shots
     return parsed
 
 
@@ -304,11 +312,20 @@ barcolors = ['#286d8c', '#a99b63', '#936846', '#4d7888']
 def graph(bitstrings, beamer, p, encoding):
 
     if beamer:
-        xticks = range(0, 2**(n_wires))
-        xtick_labels = list(map(lambda x: format(x, f"0{n_wires}b"), xticks))
-        bins = np.arange(0, 2**(n_wires)+1) - 0.5
-
         plt.figure(figsize=(16, 8))
+        x = np.arange(2**n_wires)  # the label locations
+        width = 0.8  # the width of the bars
+
+        fig, ax = plt.subplots()
+        s = [ax.bar(x - width/n_scenarios + i/n_scenarios * width, bitstrings[i].values(),
+                    align='edge',
+                    width=width/n_scenarios,
+                    label=f'scenario {i}',
+                    edgecolor = "#041017",
+                    color=barcolors[i])
+             for i in range(n_scenarios)]
+        ax.set_xticks(x, bitstrings[0].keys())
+
         plt.rc('font', size=16)
         plt.rc('axes', edgecolor='#98c9d3', labelcolor='#98c9d3', titlecolor='#98c9d3', facecolor='#041017')
         plt.rc('figure', facecolor='#041017')
@@ -319,38 +336,35 @@ def graph(bitstrings, beamer, p, encoding):
         plt.title(f"Stochastic QUBO with {encoding} encoding using {p}-QAOA")
         plt.xlabel("Solutions")
         plt.ylabel("Frequency")
-        plt.xticks(xticks, xtick_labels, rotation="vertical")
-        plt.hist(bitstrings,
-                 bins=bins,
-                 density=True,
-                 color=barcolors[:n_scenarios],
-                 edgecolor = "#041017",
-                 label=[f'scenario {i}' for i in range(n_scenarios)])
-        plt.legend()
-        plt.tight_layout()
+        ax.legend()
+        fig.tight_layout()
         plt.savefig(f'stochastic_qubo_{encoding}_p={p}_beamer.pdf',
                    transparent=True)
     else:
-        xticks = range(0, 2**(n_wires))
-        xtick_labels = list(map(lambda x: format(x, f"0{n_wires}b"), xticks))
-        bins = np.arange(0, 2**(n_wires)+1) - 0.5
-
         plt.rcdefaults()
         plt.figure(figsize=(16, 8))
+        x = np.arange(2**n_wires)  # the label locations
+        width = 0.8  # the width of the bars
+
+        fig, ax = plt.subplots()
+        s = [ax.bar(x - width/n_scenarios + i/n_scenarios * width, bitstrings[i].values(),
+                    align='edge',
+                    width=width/n_scenarios,
+                    label=f'scenario {i}',
+                    edgecolor = "#041017",
+                    color=barcolors[i])
+             for i in range(n_scenarios)]
+        ax.set_xticks(x, bitstrings[0].keys())
+
         plt.rc('font', size=16)
         plt.title(f"Stochastic QUBO with {encoding} encoding using {p}-QAOA")
+        plt.rc('font', size=16)
         plt.xlabel("Solutions")
+        plt.rc('font', size=16)
         plt.ylabel("Frequency")
-        plt.xticks(xticks, xtick_labels, rotation="vertical")
-        plt.hist(bitstrings,
-                 bins=bins,
-                 density=True,
-                 color=barcolors[:n_scenarios],
-                 edgecolor = "#041017",
-                 label=[f'scenario {i}' for i in range(n_scenarios)])
 
-        plt.legend()
-        plt.tight_layout()
+        ax.legend()
+        fig.tight_layout()
         plt.savefig(f'stochastic_qubo_{encoding}_p={p}.pdf',
                    transparent=True)
 
@@ -368,16 +382,11 @@ print_obj_vals(n_wires, n_scenarios)
 # %% graphs
 # params, bitstrings = sqaoa(n_layers=1)
 # bitstrings = parse_scenraio(bitstrings)
-graph(parsed, p=p, encoding=encoding, beamer=False)
-
-# %% test
-for i in bitstrings:
-    print(f'{i:0{n_wires+len(scen)}b}')
-
-print('------------------------------------------------------------')
-print('parsed')
+print(bitstrings)
+parsed = parse_scenraio(bitstrings, encoding=encoding)
 print(parsed)
+graph(parsed, p=p, encoding=encoding, beamer=True)
 
-# %% testt
-print(sum(C))
-print(qml.draw_mpl(circuit, style='solarized_dark')(params[0],params[1],encoding))
+
+# %% Draw circuit
+print(qml.draw_mpl(circuit, style='default')(params[0],params[1],encoding))
